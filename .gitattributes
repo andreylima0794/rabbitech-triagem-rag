@@ -1,0 +1,4 @@
+# Fins de linha: LF no repositório e na cópia de trabalho, em qualquer SO (evita diffs falsos Windows x Mac).
+* text=auto eol=lf
+# Scripts do PowerShell ficam com CRLF, o padrão do Windows.
+*.ps1 text eol=crlf

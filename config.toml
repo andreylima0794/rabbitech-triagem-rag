@@ -48,6 +48,9 @@ keep_alive = "30m"
 # com 0,55). O custo é escalar 2 casos válidos a mais (1 contra 3). Com 0,50 x 0,05 também não há
 # respostas erradas no dev. A grade tem passos de 0,05 e n pequeno: não é um ponto ótimo comprovado.
 # Medido no mesmo conjunto usado para escolher: estimativa otimista. Fixados antes do teste final.
+# Nota: depois da mudança na decidir() (coerência antes do esclarecimento), a comparação na mesma
+# grade fica: 1 fora de escopo em esclarecimento com 0,50 x 0,05 contra 0 com 0,55 x 0,05; o custo
+# continua sendo 2 casos válidos escalados a mais.
 # Valem para bge-m3 / par; outro modelo ou estratégia exige recalibrar.
 limiar_score = 0.55
 limiar_margem = 0.05

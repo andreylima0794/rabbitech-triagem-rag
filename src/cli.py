@@ -22,7 +22,7 @@ from rich.table import Table
 
 from src import ambiente, armazenamento, config, faq as faq_mod, tempos
 from src.ollama_api import ErroOllama, Ollama
-from src.pipeline import ESCALAR, ESCLARECER, Pipeline, Resultado
+from src.pipeline import ESCALAR, ESCLARECER, RESPONDER, Pipeline, Resultado, decidir
 
 console = Console()
 ETAPAS = ("regras", "classificacao", "embedding", "busca", "decisao", "geracao", "verificacao")
@@ -280,6 +280,8 @@ def cmd_calibrar(args) -> None:
     Mostra, para cada limiar candidato, quanto de cada grupo passaria. Não escolhe nada: a escolha é da autora.
     Lembrete: no pipeline real, o classificador barra parte do fora de escopo antes da busca.
     """
+    if args.grade:
+        return cmd_grade(args)
     cfg, faq, ollama, cliente = _preparar(args)
     nome = armazenamento.nome_colecao(cfg.modelo_embedding, cfg.estrategia) + cfg.sufixo_colecao
     colecao = armazenamento.abrir_colecao(cliente, nome, faq.hash)
@@ -331,6 +333,87 @@ def cmd_calibrar(args) -> None:
     console.print(f"[dim]gravado: {arquivo}[/]")
 
 
+ROTULOS_GRADE = ("dentro-certo", "dentro-errado", "fora", "ambiguo", "conta", "humano", "injecao")
+
+
+def cmd_grade(args) -> None:
+    """Grade combinada score x margem, com regras, classificador, coerência e verificação aplicados.
+
+    Cada mensagem passa UMA vez pelo pipeline real (temperatura 0), com os limiares desligados e geração
+    forçada, para ter intenção, candidatos e resultado da verificação. Depois a mesma decidir() do pipeline
+    é reaplicada a cada célula. A busca também roda à parte para TODAS as mensagens (inclusive as barradas
+    antes dela), só para rotular os casos válidos em "top-1 certo" e "top-1 errado".
+    Cada célula conta a 1ª rodada (sem a resposta ao esclarecimento).
+    """
+    pipe, cfg, ollama, _ = _pipeline(args)
+    pipe.cfg = replace(cfg, limiar_score=None, limiar_margem=None)  # força a passar por geração e verificação
+    scores = [float(x) for x in args.scores.split(",")]
+    margens = [float(x) for x in args.margens.split(",")]
+    linhas = _linhas_perguntas(Path(args.perguntas), args.conjunto)
+
+    casos = []
+    with console.status("") as status:
+        for i, l in enumerate(linhas, 1):
+            status.update(f"{i}/{len(linhas)} · {l['id']}")
+            res = pipe.atender(l["mensagem"], forcar_geracao=True)
+            vetor = ollama.embed(cfg.modelo_embedding, [cfg.prefixos.consulta + res.mensagem]).vetores[0]
+            busca = armazenamento.agrupar_por_registro(armazenamento.buscar(pipe.colecao, vetor, cfg.k_vetores))
+            if l["grupo"] == "dentro":
+                rotulo = "dentro-certo" if busca[0].id_registro == int(l["registro_esperado"]) else "dentro-errado"
+            else:
+                rotulo = l["grupo"]
+            casos.append((l, rotulo, res, busca))
+
+    celulas = []
+    for s in scores:
+        for m in margens:
+            cont = {r: {RESPONDER: 0, ESCLARECER: 0, ESCALAR: 0} for r in ROTULOS_GRADE}
+            for l, rotulo, res, _ in casos:
+                if res.motivo != "limiar_nao_calibrado":  # barrado antes (regra, classificador, falha)
+                    d = ESCALAR
+                else:
+                    top1 = pipe.registros[res.candidatos[0].id_registro]
+                    d, _, _ = decidir(res.candidatos, res.intencao, top1.categorias, s, m, 0)
+                    if d == RESPONDER and res.verificacao:
+                        d = ESCALAR
+                cont.setdefault(rotulo, {RESPONDER: 0, ESCLARECER: 0, ESCALAR: 0})[d] += 1
+            celulas.append((s, m, cont))
+
+    n = {r: sum(1 for _, rot, _, _ in casos if rot == r) for r in ROTULOS_GRADE}
+    t = Table(title=f"{cfg.modelo_embedding} / {cfg.estrategia} · conjunto {args.conjunto} · "
+                    "RESPONDER / ESCLARECER / ESCALAR (1ª rodada) · * = limiares do config.toml")
+    t.add_column("score", justify="right")
+    t.add_column("margem", justify="right")
+    for r in ROTULOS_GRADE:
+        t.add_column(f"{r} ({n[r]})", justify="center")
+    for s, m, cont in celulas:
+        marca = "*" if (s, m) == (cfg.limiar_score, cfg.limiar_margem) else ""
+        t.add_row(f"{s:.2f}{marca}", f"{m:.2f}",
+                  *(f"{cont[r][RESPONDER]}/{cont[r][ESCLARECER]}/{cont[r][ESCALAR]}" for r in ROTULOS_GRADE))
+    console.print(t)
+
+    carimbo = f"{datetime.now():%Y%m%d-%H%M%S}_grade_{cfg.modelo_embedding.replace(':', '-')}_{cfg.estrategia}"
+    pasta = Path("resultados")
+    with open(pasta / f"{carimbo}.csv", "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["score", "margem", "rotulo", "n", RESPONDER, ESCLARECER, ESCALAR])
+        for s, m, cont in celulas:
+            for r in ROTULOS_GRADE:
+                w.writerow([f"{s:.2f}", f"{m:.2f}", r, n[r], cont[r][RESPONDER], cont[r][ESCLARECER], cont[r][ESCALAR]])
+    with open(pasta / f"{carimbo}_casos.csv", "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["id", "rotulo", "barrado_antes", "intencao", "top1", "score1", "top2", "score2", "margem",
+                    "top1_busca", "verificacao", "geracao"])
+        for l, rotulo, res, busca in casos:
+            c = res.candidatos
+            w.writerow([l["id"], rotulo, "" if res.motivo == "limiar_nao_calibrado" else res.motivo, res.intencao or "",
+                        c[0].id_registro if c else "", f"{c[0].score:.4f}" if c else "",
+                        c[1].id_registro if len(c) > 1 else "", f"{c[1].score:.4f}" if len(c) > 1 else "",
+                        f"{c[0].score - c[1].score:.4f}" if len(c) > 1 else "", busca[0].id_registro,
+                        res.verificacao or ("ok" if res.geracao else ""), res.geracao.texto if res.geracao else ""])
+    console.print(f"[dim]gravado: resultados/{carimbo}.csv e {carimbo}_casos.csv[/]")
+
+
 # --- main --------------------------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> None:
@@ -360,6 +443,10 @@ def main(argv: list[str] | None = None) -> None:
     sp = com_estrategia(sub.add_parser("calibrar", help="tabelas por limiar de score e margem (só a busca)"))
     sp.add_argument("--perguntas", default="perguntas_exemplo.csv")
     sp.add_argument("--conjunto", choices=("dev", "teste"), default="dev")
+    sp.add_argument("--grade", action="store_true",
+                    help="grade combinada score x margem com o pipeline inteiro (classificador, coerência, verificação)")
+    sp.add_argument("--scores", default="0.50,0.55,0.60,0.65", help="limiares de score da grade (com --grade)")
+    sp.add_argument("--margens", default="0.00,0.03,0.05", help="limiares de margem da grade (com --grade)")
 
     args = p.parse_args(argv)
     try:

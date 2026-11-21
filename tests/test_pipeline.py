@@ -41,6 +41,11 @@ class TestDecidir(unittest.TestCase):
         self.assertEqual(decidir(cands(0.9, 0.5), "dados", ("acesso_senha",), **self.L,
                                  esclarecimentos=0)[1], "intencao_incoerente")
 
+    def test_incoerente_com_margem_pequena_escala_sem_esclarecer(self):
+        # caso f09: score bom, margem pequena, mas a intenção não bate com o 1º registro
+        d, m, _ = decidir(cands(0.9, 0.88), "suporte_status", ("acesso_senha",), **self.L, esclarecimentos=0)
+        self.assertEqual((d, m), (ESCALAR, "intencao_incoerente"))
+
     def test_registro_em_duas_categorias(self):
         d, _, _ = decidir(cands(0.9, 0.5), "assinatura_produto", ("usuarios_planos", "assinatura_produto"),
                           **self.L, esclarecimentos=0)

@@ -99,14 +99,16 @@ def decidir(candidatos: list[Candidato], intencao: str, categorias_top1: tuple[s
         return ESCALAR, "indice_vazio", sinais
     if score_ok is None or margem_ok is None:
         return ESCALAR, "limiar_nao_calibrado", sinais
-    if score_ok and not margem_ok:
+    if not score_ok:
+        return ESCALAR, "score_baixo", sinais
+    # Coerência antes do esclarecimento: se a intenção não bate com o 1º registro, perguntar ao cliente
+    # "é X ou Y?" ofereceria duas perguntas do FAQ sobre outro assunto (caso f09, "dois fatores").
+    if not coerente:
+        return ESCALAR, "intencao_incoerente", sinais
+    if not margem_ok:
         if esclarecimentos == 0:
             return ESCLARECER, "margem_pequena", sinais
         return ESCALAR, "ambiguo_apos_esclarecimento", sinais
-    if not score_ok:
-        return ESCALAR, "score_baixo", sinais
-    if not coerente:
-        return ESCALAR, "intencao_incoerente", sinais
     return RESPONDER, "confianca_alta", sinais
 
 
