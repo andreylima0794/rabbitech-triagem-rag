@@ -1,0 +1,58 @@
+# Parâmetros do algoritmo. Portas e nomes dos modelos ficam no .env (o compose também precisa deles).
+#
+# Regra deste arquivo: nenhum número de calibração é chutado. Chave comentada = "a calibrar";
+# o config.py devolve None para ela e o pipeline trata como não calibrado (escala para humano).
+
+[faq]
+arquivo = "base/faq_interno.md"
+categorias = "base/categorias.toml"
+pares_esperados = 18            # o briefing diz 18 perguntas; o parser falha se não bater
+
+[indice]
+# par = pergunta + resposta num vetor | pergunta = só a pergunta | separado = um vetor para cada,
+# os dois apontando para o mesmo registro pai. Comparação D4/D11 do rascunho.
+estrategia = "par"
+registros = "indice/registros.json"   # registro pai (texto completo); o Chroma guarda só os vetores
+
+[pedacos]
+# Divisão do texto em pedaços com sobreposição (vetores filhos). Desligada: no FAQ atual cada par
+# cabe num pedaço só. Unidade: palavras. Tamanho e sobreposição sem valor: calibrar quando houver texto longo.
+ativo = false
+# tamanho =
+# sobreposicao =
+
+[embedding.prefixos]
+# Prefixos de tarefa por modelo, aplicados nos dois lados (documento no index, consulta na busca).
+# Modelo sem entrada aqui = sem prefixo.
+"nomic-embed-text" = { consulta = "search_query: ", documento = "search_document: " }
+
+[busca]
+k_registros = 3                 # registros devolvidos depois de agrupar (rascunho 7.3: testar 2, 3 e 5)
+# vetores buscados antes de agrupar: 0 = todos. Com 18 registros (36 vetores no "separado") buscar
+# todos é barato e garante que o 2º registro nunca fica de fora por causa de vetores repetidos.
+k_vetores = 0
+
+[llm]
+temperatura = 0                 # classificação e geração reprodutíveis (mesma entrada, mesma saída)
+# Contexto definido explicitamente: o Ollama 0.40.16 carregou o llama3.1:8b com 4096 por padrão
+# (visto no `ollama ps`), bem abaixo do máximo do modelo. O bench registra os tokens de cada prompt
+# para mostrar a folga.
+num_ctx = 4096
+# Mantém o modelo carregado entre mensagens (o padrão do Ollama descarrega depois de alguns minutos parado).
+keep_alive = "30m"
+
+[confianca]
+# Escolhidos pela autora a partir da grade score x margem (bge-m3 / par, conjunto dev, 62 mensagens).
+# Motivo: 0,55 fica acima dos scores do SSO (0,515) e do "desconto no plano anual" (0,548), que com 0,50
+# virariam perguntas de esclarecimento sobre algo que o FAQ não cobre (3 casos de fora de escopo contra 1
+# com 0,55). O custo é escalar 2 casos válidos a mais (1 contra 3). Com 0,50 x 0,05 também não há
+# respostas erradas no dev. A grade tem passos de 0,05 e n pequeno: não é um ponto ótimo comprovado.
+# Medido no mesmo conjunto usado para escolher: estimativa otimista. Fixados antes do teste final.
+# Valem para bge-m3 / par; outro modelo ou estratégia exige recalibrar.
+limiar_score = 0.55
+limiar_margem = 0.05
+
+[limites]
+# A medir: tamanho típico das mensagens e tempo de cada etapa no hardware usado.
+# mensagem_max_caracteres =
+# timeout_etapa_s =

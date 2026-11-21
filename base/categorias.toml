@@ -1,0 +1,31 @@
+# Categoria de cada registro do FAQ, pelo número do par (1 = primeira pergunta).
+# Agrupamento da seção 3 do rascunho. Usado na Fase 2 (coerência entre a
+# intenção classificada e a categoria do registro recuperado).
+# O parser confere que os 18 números existem e batem com o FAQ.
+# Valor: uma categoria (texto) ou uma lista, quando o registro pertence a mais de uma.
+
+[registros]
+1  = "acesso_senha"        # Como faço para redefinir minha senha?
+2  = "acesso_senha"        # O link de redefinição de senha expirou. E agora?
+3  = "acesso_senha"        # Não consigo entrar mesmo com a senha certa.
+4  = "usuarios_planos"     # Como adiciono um novo usuário à conta?
+5  = "usuarios_planos"     # Quantos usuários cada plano permite?
+6  = ["usuarios_planos", "assinatura_produto"]  # Como faço upgrade ou downgrade de plano? (vale nas duas)
+7  = "suporte_status"      # Diferença entre Suporte Premium e o suporte incluso
+8  = "suporte_status"      # Qual o prazo de resposta do suporte?
+9  = "suporte_status"      # O sistema está fora do ar. Como confirmo?
+10 = "dados"               # Como exporto meus dados?
+11 = "dados"               # Consigo importar dados de outra ferramenta?
+12 = "dados"               # A importação falhou com erro de codificação.
+13 = "integracoes_api"     # Como integro o sistema a outras ferramentas?
+14 = "integracoes_api"     # Qual o limite de requisições da API?
+15 = "integracoes_api"     # Perdi eventos do webhook. Dá para reenviar?
+16 = "assinatura_produto"  # Como cancelo minha assinatura?
+17 = "assinatura_produto"  # Vocês têm aplicativo para celular?
+18 = "assinatura_produto"  # Onde vejo minhas faturas?
+
+# Intenções que não vêm do FAQ: o classificador pode devolvê-las e elas escalam direto.
+[especiais]
+fora_de_escopo = "assunto que o FAQ não cobre (preço, reembolso, LGPD, SSO...)"
+dados_da_conta = "precisa olhar a conta do cliente (fatura errada, conta suspensa?)"
+pedido_humano  = "pediu atendente ou é urgente"

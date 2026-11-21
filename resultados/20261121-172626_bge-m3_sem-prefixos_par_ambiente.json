@@ -1,0 +1,56 @@
+{
+  "so": "Windows 11",
+  "cpu": "AMD Ryzen 7 7800X3D 8-Core Processor",
+  "ram_gb": 63.1,
+  "gpu": [
+    {
+      "nome": "NVIDIA GeForce RTX 4080 SUPER",
+      "vram_gb": 16.0,
+      "driver": "610.88"
+    }
+  ],
+  "python": "3.14.6",
+  "ollama": "0.40.16",
+  "chroma_versao_api": "1.0.0",
+  "chromadb_cliente": "1.5.9",
+  "modelo_geracao": {
+    "nome": "llama3.1:8b",
+    "digest": "46e0c10c039e",
+    "parametros": "8.0B",
+    "quantizacao": "Q4_K_M",
+    "contexto_maximo_do_modelo": 131072
+  },
+  "modelo_embedding": {
+    "nome": "bge-m3",
+    "digest": "790764642607",
+    "parametros": "566.70M",
+    "quantizacao": "F16",
+    "contexto_maximo_do_modelo": 8192
+  },
+  "imagens_docker": {
+    "ollama": "ollama/ollama:0.40.16",
+    "chroma": "chromadb/chroma:1.5.9"
+  },
+  "execucao": {
+    "estrategia": "par",
+    "perguntas": "perguntas_exemplo.csv",
+    "conjunto": "dev",
+    "repeticoes": 3,
+    "forcar_geracao": true,
+    "limiar_score": null,
+    "limiar_margem": null,
+    "k_registros": 3,
+    "num_ctx": 4096,
+    "temperatura": 0.0,
+    "aquecimento_ms": 683,
+    "aquecimento_tempos_ms": {
+      "regras": 0,
+      "classificacao": 131,
+      "embedding": 44,
+      "busca": 29,
+      "decisao": 0,
+      "geracao": 479,
+      "verificacao": 0
+    }
+  }
+}

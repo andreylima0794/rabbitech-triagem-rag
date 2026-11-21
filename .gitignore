@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+# gerado pelo `index`; anda junto com a coleção do Chroma (volume do Docker)
+indice/
+
+# logs locais (podem ter nome da maquina e caminhos)
+logs/

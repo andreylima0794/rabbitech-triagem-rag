@@ -1,0 +1,4 @@
+# Versões fixas: o cliente do Chroma acompanha a imagem do servidor (docker-compose / .env).
+chromadb==1.5.9
+httpx==0.28.1
+rich==15.0.0

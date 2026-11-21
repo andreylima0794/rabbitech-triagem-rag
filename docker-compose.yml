@@ -1,0 +1,45 @@
+# Ollama (modelos) + Chroma (índice de vetores), tudo local.
+# Uso: copie .env.example para .env e rode `docker compose up -d`.
+# Com GPU NVIDIA: `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d`.
+
+services:
+  ollama:
+    image: ${OLLAMA_IMAGEM}
+    volumes:
+      - ollama_modelos:/root/.ollama
+    ports:
+      # só no localhost da máquina: nada fica exposto na rede
+      - "127.0.0.1:${OLLAMA_PORTA}:11434"
+    healthcheck:
+      # o próprio CLI do ollama consulta o servidor dentro do container
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  # roda uma vez e termina: baixa os dois modelos (se já existirem, só confere)
+  modelos:
+    image: ${OLLAMA_IMAGEM}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      MODELO_GERACAO: ${MODELO_GERACAO}
+      MODELO_EMBEDDING: ${MODELO_EMBEDDING}
+    entrypoint: ["/bin/sh", "-c", "ollama pull \"$$MODELO_GERACAO\" && ollama pull \"$$MODELO_EMBEDDING\" && ollama list"]
+    restart: "no"
+
+  chroma:
+    image: ${CHROMA_IMAGEM}
+    volumes:
+      - chroma_dados:/data
+    ports:
+      - "127.0.0.1:${CHROMA_PORTA}:8000"
+    # sem variáveis de telemetria: desde a 1.5.4 o Chroma não coleta telemetria de produto
+    # (docs.trychroma.com/docs/overview/oss). O cliente Python também desliga por configuração.
+
+volumes:
+  ollama_modelos:
+  chroma_dados:
