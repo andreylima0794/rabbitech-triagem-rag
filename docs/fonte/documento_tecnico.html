@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Assistente de triagem de suporte com RAG local</title>
+<style>
+  @page { size: A4; margin: 14mm 15mm 13mm 15mm; }
+  :root { --tx: #1c1f24; --mu: #5b6270; --ln: #d5d9e0; --bg: #f3f5f8; --ac: #1f5fbf; }
+  * { box-sizing: border-box; }
+  html, body { background: #fff; color: var(--tx); }
+  body { font-family: "Segoe UI", Arial, sans-serif; font-size: 9.4pt; line-height: 1.36; margin: 0; }
+  h1 { font-size: 16pt; margin: 0 0 2pt; letter-spacing: -0.2pt; }
+  h2 { font-size: 11.2pt; margin: 9pt 0 3pt; color: var(--ac); border-bottom: 1px solid var(--ln); padding-bottom: 1.5pt; }
+  h3 { font-size: 9.6pt; margin: 6pt 0 2pt; }
+  p { margin: 0 0 4pt; }
+  .meta { color: var(--mu); font-size: 8.6pt; margin-bottom: 5pt; }
+  .lead { font-size: 9.8pt; }
+  pre { font-family: Consolas, "Courier New", monospace; font-size: 8.1pt; line-height: 1.3; background: var(--bg);
+        border: 1px solid var(--ln); border-radius: 3pt; padding: 5pt 7pt; margin: 3pt 0 4pt; white-space: pre; }
+  code { font-family: Consolas, "Courier New", monospace; font-size: 8.4pt; background: var(--bg); padding: 0 2pt; border-radius: 2pt; }
+  table { width: 100%; border-collapse: collapse; margin: 3pt 0 5pt; font-size: 8.5pt; line-height: 1.28; }
+  th, td { border: 1px solid var(--ln); padding: 2.4pt 4pt; vertical-align: top; text-align: left; }
+  th { background: var(--bg); font-weight: 600; }
+  td.n { text-align: right; white-space: nowrap; }
+  ul { margin: 0 0 4pt; padding-left: 13pt; }
+  li { margin: 0 0 1.5pt; }
+  .page { break-after: page; }
+  .nb { break-inside: avoid; }
+  .small { font-size: 8.4pt; color: var(--mu); }
+  .anexo h2 { margin-top: 0; }
+  .anexo svg { display: block; margin: 6pt auto 0; }
+</style>
+</head>
+<body>
+
+<!-- ============ PÁGINA 1 ============ -->
+<section class="page">
+<h1>Assistente de triagem de suporte com RAG local</h1>
+<div class="meta">RabbITech · Teste Técnico Semana 2 · Autor: Andrey Felipe de Lima · 22/11/2026 ·
+Repositório: github.com/andreylima0794/rabbitech-triagem-rag</div>
+
+<p class="lead">Proponho um assistente 100% local (Ollama + Chroma) que responde sozinho só quando está confiante e
+escala para uma pessoa em todos os outros casos. No teste final (45 mensagens geradas por IA, rodado uma vez com os
+limiares fixados antes), nenhuma dúvida válida recebeu resposta errada com confiança alta, e as 21 mensagens que
+deviam escalar escalaram; um caso ficou discutível. O custo é real: o sistema respondeu sozinho 9 de 18 dúvidas
+válidas (50%). Uma prova de conceito funcional acompanha este documento no repositório.</p>
+
+<h2>1. Fluxo e pseudocódigo</h2>
+<p>A mensagem passa por camadas que só deixam seguir quem merece resposta automática. O fluxograma está no anexo.</p>
+<pre>função atender(mensagem, esclarecimentos = 0):
+    msg ← mascarar(normalizar(mensagem))         # e-mail, CPF, CNPJ, cartão, telefone; antes de qualquer LLM
+    se regra_rápida(msg) ∈ {injeção, urgência, pedido de humano}:  escalar
+    intenção ← classificar(msg)                   # LLM local, saída JSON por esquema
+    se intenção ∈ {dados_da_conta, pedido_humano, fora_de_escopo}:  escalar
+    r1, r2 ← agrupar_por_registro(buscar(embedding(msg)))[0..1]
+    se r1.score &lt; 0,55:                          escalar (score baixo)
+    se intenção ∉ categorias(r1):                 escalar (incoerente)
+    se r1.score − r2.score &lt; 0,05:
+        se esclarecimentos = 0:  perguntar "é r1.pergunta ou r2.pergunta?"   # sem LLM
+        senão:                   escalar (continua ambíguo)
+    resposta ← gerar(msg, texto_completo(r1))     # só o registro escolhido entra no prompt
+    se verificar(resposta, r1) falha:             escalar
+    responder(resposta)
+
+falha do Ollama ou do Chroma em qualquer etapa: escalar e avisar o cliente</pre>
+<p>Três saídas: <b>RESPONDER</b>; <b>ESCLARECER</b>, uma única pergunta montada com as duas perguntas candidatas do
+FAQ, sem LLM; e <b>ESCALAR</b>, que entrega ao atendente um resumo (motivo, intenção, mensagem mascarada e
+candidatos) para ele não perguntar tudo de novo. Escalar custa menos do que errar: quem atende já é pago para isso,
+e uma resposta errada custa o cliente.</p>
+
+<h2>2. Decisões técnicas e justificativa</h2>
+<table>
+<tr><th style="width:15%">Decisão</th><th style="width:25%">Escolha</th><th style="width:31%">Por quê</th><th>Como validei</th></tr>
+<tr><td>Onde roda</td><td>Ollama local, portas só em 127.0.0.1</td><td>Política de dados: nada do cliente sai da empresa</td><td>Pipeline completo local numa RTX 4080 SUPER</td></tr>
+<tr><td>Como usa o FAQ</td><td>RAG, sem treinar o modelo</td><td>FAQ muda; basta reindexar. O índice guarda o hash do FAQ e recusa rodar desatualizado</td><td>Uma coleção por modelo e estratégia, reindexada a cada troca</td></tr>
+<tr><td>Embedding</td><td>bge-m3 (multilíngue)</td><td>O briefing sugere nomic-embed-text, mas medi pior em português</td><td>Top-1 certo: 16 de 18 contra 13 de 18 (melhor nomic)</td></tr>
+<tr><td>Indexação</td><td>Pergunta + resposta num vetor ("par"), com registro pai</td><td>Empatou com vetores separados (16 de 18); a mais simples vence</td><td>Três estratégias nas mesmas mensagens</td></tr>
+<tr><td>Intenção</td><td>llama3.1:8b com saída JSON, antes da busca</td><td>Barra cedo conta, pedido de humano e fora de escopo; serve de checagem de coerência</td><td>Mediana de 143 ms; erros medidos (seção 4)</td></tr>
+<tr><td>Confiança</td><td>Score ≥ 0,55, margem ≥ 0,05 e coerência</td><td>Similaridade não é probabilidade; a margem detecta empate entre registros</td><td>Grade score × margem no dev (62 mensagens)</td></tr>
+<tr><td>Geração</td><td>llama3.1:8b, registro completo, <code>num_ctx</code> 4096, temperatura 0</td><td>Modelo sugerido no briefing; registros curtos cabem com folga</td><td>Mediana de 533 ms; maior prompt com 281 tokens</td></tr>
+<tr><td>Verificação</td><td>Regras: número fora do registro, instrução interna vazada</td><td>Barata e previsível, mas <b>não</b> pega resposta do registro errado</td><td>Respostas erradas aprovadas no dev (seção 4)</td></tr>
+</table>
+</section>
+
+<!-- ============ PÁGINA 2 ============ -->
+<section class="page">
+<p><b>Registro pai e vetores filhos.</b> Cada par do FAQ vira um registro com ID, que é a fonte da verdade; os vetores
+só apontam para esse ID, e o texto que vai ao LLM sai do registro. A busca agrupa os vetores por registro antes de
+calcular a margem, para que dois vetores do mesmo item não pareçam empate.</p>
+
+<p><b>Como medi e defini o limiar.</b> Rodei as 62 mensagens do conjunto de ajuste uma vez, guardando score, margem,
+intenção e resposta gerada, e reapliquei a regra de decisão para cada combinação de score (0,50 a 0,65) e margem
+(0 a 0,05), contando quantas mensagens de cada tipo seriam respondidas, esclarecidas ou escaladas
+(<code>calibrar --grade</code>). Escolhi o corte pelo custo de cada erro, salvei no repositório e só então rodei o
+teste final, uma vez. <b>Por que 0,55 e não 0,50:</b> as duas zeram as respostas erradas no ajuste, mas com 0,50 duas
+mensagens que o FAQ não resolve virariam pergunta de esclarecimento: "tem desconto no plano anual?" e "quantos usuários
+eu tenho ativos hoje?" (que depende da conta). Com 0,55, nenhuma. O custo é escalar 2 dúvidas válidas a mais. A grade
+tem passos de 0,05 e poucos casos: é uma escolha com custo conhecido, não um ótimo comprovado.</p>
+
+<h2>3. O que medi</h2>
+<p class="small">Windows 11, Ryzen 7 7800X3D, 63 GB RAM, RTX 4080 SUPER 16 GB; Ollama 0.40.16, Chroma 1.5.9,
+llama3.1:8b Q4_K_M, bge-m3. Em outro hardware os tempos mudam. Dados brutos em <code>resultados/</code>.</p>
+
+<h3>Embeddings (ajuste, 18 mensagens com resposta no FAQ, top-1 correto)</h3>
+<p>nomic-embed-text com os prefixos do model card: <b>9 de 18</b> · nomic sem prefixos: <b>13 de 18</b> ·
+bge-m3: <b>16 de 18</b>. Seguir o model card piorou a busca, e só descobri medindo. A diferença justa é de 3 casos:
+"bge-m3 é melhor neste FAQ", não "muito melhor".</p>
+
+<h3>Teste final (45 mensagens, limiares fixados antes)</h3>
+<table class="nb">
+<tr><th style="width:34%">Grupo</th><th style="width:9%">n</th><th>Resultado</th></tr>
+<tr><td>Com resposta no FAQ</td><td class="n">18</td><td>9 respondidas com o registro certo · 5 esclarecimentos · 4 escaladas</td></tr>
+<tr><td>Fora de escopo</td><td class="n">8</td><td>8 escaladas</td></tr>
+<tr><td>Dados da conta, pedido de humano, injeção</td><td class="n">13</td><td>13 escaladas</td></tr>
+<tr><td>Ambíguas</td><td class="n">6</td><td>5 escaladas · 1 respondida (a10, discutível) · 0 esclarecimentos</td></tr>
+<tr><td><b>Total</b></td><td class="n"><b>45</b></td><td><b>30 com a decisão esperada (67%)</b></td></tr>
+</table>
+<ul>
+<li><b>Resposta errada com confiança alta:</b> 0 nas dúvidas válidas. A a10 ("Meu arquivo não entrou no sistema.")
+recebeu a resposta de erro de codificação: plausível, mas assume a causa.</li>
+<li><b>Busca trouxe o registro errado em 3 casos</b>, e camadas diferentes seguraram: a margem pequena (n01) e a
+coerência da intenção (n04, n10).</li>
+<li><b>O piso de 0,55 teve efeito:</b> "Existe integração pronta com o Salesforce?" teve score 0,5293 e margem 0,0665;
+com 0,50 teria sido respondida com o registro de integrações.</li>
+<li><b>Escalonamento de dúvida válida:</b> 4 de 18 (22%): n04 e n10 (busca errada, escalar foi o certo), n17 (score
+0,5439) e n18 (classificador marcou como dado da conta).</li>
+</ul>
+<p><b>Latência (mediana):</b> classificação 143 ms · embedding 19 ms · busca 24 ms · geração 533 ms (primeiro token em
+74 ms) · <b>resposta completa 732 ms</b> (602 a 1016) · escalonamento 168 ms (126 a 224). A primeira mensagem depois
+de parado leva cerca de 10 s (carga dos modelos na GPU); por isso os modelos ficam carregados (<code>keep_alive</code>
+de 30 min). O Ollama carregou o modelo com contexto de 4096 tokens, embora ele aceite 131072; deixei o valor explícito.</p>
+</section>
+
+<!-- ============ PÁGINA 3 ============ -->
+<section class="page">
+<h2>4. Riscos e mitigações</h2>
+<table>
+<tr><th style="width:15%">Risco</th><th style="width:31%">O que medi</th><th style="width:28%">Mitigação</th><th>O que sobra</th></tr>
+<tr><td>Alucinação: resposta do registro errado</td><td>No ajuste, a verificação aprovou respostas erradas (SSO, SLA, mudança de plano); o llama3.1 nunca respondeu "NÃO SEI"</td><td>Piso de score, margem e coerência, em camadas, antes de gerar</td><td>A verificação não é barreira. Próximo passo: checagem por LLM, medida antes de adotar</td></tr>
+<tr><td>Alucinação: dado de conta inventado</td><td>"Quantos usuários eu tenho ativos hoje?" gerou "você tem 3 usuários" no ajuste</td><td>Intenção <code>dados_da_conta</code> escala; o piso de 0,55 barra o resto</td><td>Sem regra para frases como "você tem…": risco aceito e documentado</td></tr>
+<tr><td>Classificador erra</td><td>Escalou uma dúvida válida sobre fatura antiga; algumas escaladas certas tiveram o motivo errado</td><td>Erra para o lado seguro: escalar</td><td>Mais escalonamentos; revisar o prompt com mais exemplos</td></tr>
+<tr><td>Injeção de prompt</td><td>A regra rápida pegou 1 de 5; o classificador pegou as outras 4</td><td>Prompt só com o registro do FAQ; verificação barra vazamento de instrução interna</td><td>Regra rápida fraca; ampliar a lista</td></tr>
+<tr><td>Latência do modelo local</td><td>~10 s na primeira chamada; 0,6 a 1,0 s por resposta depois</td><td>Modelos mantidos carregados; falha de serviço escala e avisa o cliente</td><td>Timeout por etapa previsto, ainda sem valor: definir no hardware de produção</td></tr>
+<tr><td>Tamanho de contexto</td><td>Ollama usa 4096 por padrão (o modelo aceita 131072); maior prompt (classificação): 491 tokens</td><td><code>num_ctx</code> explícito; só um registro (29 a 55 palavras) entra no prompt</td><td>Revisar se o FAQ crescer ou ganhar textos longos</td></tr>
+<tr><td>Dados pessoais</td><td>O teste grava só ids, decisões, scores e tempos, sem o texto</td><td>Máscara de e-mail, CPF e telefone antes de qualquer LLM (testada)</td><td>Regras simples: não pegam nome nem endereço</td></tr>
+<tr><td>FAQ desatualizado</td><td>O índice guarda o hash do FAQ</td><td>A busca recusa rodar se o FAQ mudou sem reindexar</td><td>Depende de alguém manter o FAQ</td></tr>
+</table>
+
+<h2>5. Estimativa de esforço</h2>
+<p>Nove dias úteis para uma pessoa, com acesso ao hardware de produção. Mantive 1,5 dia nas três etapas mais
+incertas, porque cortar justamente o que é incerto é o erro comum de estimativa.</p>
+<table class="nb">
+<tr><th style="width:42%">Etapa</th><th style="width:7%">Dias</th><th>Por quê</th></tr>
+<tr><td>Ingestão, registro pai e indexação</td><td class="n">0,5</td><td>18 itens já em pergunta e resposta</td></tr>
+<tr><td>Classificação de intenção e regras rápidas</td><td class="n">1</td><td>Categorias, prompt com JSON, regras de escalonamento</td></tr>
+<tr><td>Recuperação e comparação de embeddings</td><td class="n">1</td><td>Busca e comparação entre modelos</td></tr>
+<tr><td>Geração e proteções do prompt</td><td class="n">1,5</td><td>O LLM varia e exige várias rodadas de ajuste</td></tr>
+<tr><td>Confiança e calibração dos limiares</td><td class="n">1,5</td><td>Só se calibra com dados, e cada mudança recalibra</td></tr>
+<tr><td>Conjunto de avaliação e métricas</td><td class="n">1,5</td><td>Bons casos dão trabalho, e a medição se repete</td></tr>
+<tr><td>Docker Compose, logs, timeouts e observabilidade</td><td class="n">1</td><td>Ollama, Chroma e aplicação empacotados</td></tr>
+<tr><td>Documentação, testes finais e folga</td><td class="n">1</td><td>Ajustes e imprevistos</td></tr>
+<tr><td><b>Total</b></td><td class="n"><b>9</b></td><td>A maior incerteza está na calibração e na avaliação</td></tr>
+</table>
+<p>A prova de conceito já cobre indexação, busca, decisão, geração e medição. Falta para produção: o esclarecimento
+em duas rodadas medido de ponta a ponta, timeouts por etapa, observabilidade e a fila de atendimento humano.</p>
+</section>
+
+<!-- ============ PÁGINA 4 ============ -->
+<section class="page">
+<h2>6. Uso de IA</h2>
+<p><b>Ferramentas utilizadas e como foram aplicadas.</b> Utilizei o Claude no chat como um colega de engenharia durante
+o desenvolvimento. Discuti as decisões tomadas, busquei aprofundar meus conhecimentos e pedi que questionasse minhas
+escolhas, apresentando alternativas e seus respectivos pontos positivos e negativos. O Claude Code foi utilizado para
+implementar a prova de conceito, incluindo Docker Compose, CLI, benchmark e testes, sempre com base nas decisões que já
+haviam sido definidas. Ele também escreveu o conjunto de ajuste (62 mensagens), que a própria IA revisou antes da
+primeira rodada. O GPT gerou as 45 mensagens do teste final a partir do FAQ.</p>
+
+<p><b>Decisões que partiram de mim.</b> Algumas decisões importantes foram tomadas considerando não apenas os
+resultados técnicos, mas também a experiência do cliente:</p>
+<ul>
+<li>Optei por uma única rodada de esclarecimento, pois insistir em uma segunda interação poderia tornar a experiência
+cansativa para o cliente.</li>
+<li>Preferi encaminhar casos incertos para atendimento humano em vez de arriscar uma resposta incorreta. Entendo que o
+custo de uma escalação é menor do que o de perder a confiança do cliente.</li>
+<li>Defini os limiares de 0,55 e 0,05 com base nos critérios apresentados na seção 2.</li>
+<li>Decidi comparar o nomic-embed-text, citado no enunciado, com o bge-m3, em vez de adotar direto o modelo citado,
+que entendi como uma referência, não como uma exigência. Considerei importante avaliar alternativas com melhor
+adequação ao português.</li>
+</ul>
+
+<p><b>Sugestões da IA que foram questionadas, corrigidas ou descartadas.</b> Durante o desenvolvimento, não aceitei
+todas as recomendações da IA sem verificar seus resultados. Alguns exemplos:</p>
+<ul>
+<li><b>Prefixos do nomic:</b> a IA recomendou utilizar os prefixos indicados no model card. Pedi para medir com e sem
+os prefixos, e o top-1 caiu de 13 para 9 acertos entre as 18 mensagens válidas do conjunto de ajuste. Descartei essa
+recomendação e comparei o bge-m3 com a melhor configuração do nomic.</li>
+<li><b>Justificativa dos limiares:</b> a IA justificou os valores escolhidos como os menores cortes capazes de zerar as
+respostas incorretas. Ao conferir a tabela antes de gravar o motivo, o Claude Code apontou que o limiar de 0,50 também
+apresentava zero respostas incorretas. Corrigi a justificativa para refletir o que os dados mostravam, conforme a
+seção 2.</li>
+<li><b>Números do relatório de testes:</b> a IA informou que o teste continha 44 mensagens e que 26 deveriam ser
+encaminhadas para atendimento humano. Ao conferir os resultados contra o CSV, os números corretos eram 45 mensagens e
+21 encaminhamentos.</li>
+<li><b>Outras correções:</b> quatro linhas erradas no conjunto de ajuste, uma versão equivocada do Chroma no registro
+de ambiente e a ordem das verificações na decisão (margem antes da coerência). Foram achadas na revisão do trabalho e
+registradas no <code>ia_log.md</code>, com seus motivos.</li>
+</ul>
+<p><b>Prática adotada durante o desenvolvimento.</b> Procurei manter uma separação entre a utilização da IA como apoio
+e a validação das decisões. Os limiares foram definidos e versionados antes da execução do teste final, que foi
+realizado uma única vez. Os números deste documento vêm dos arquivos CSV em <code>resultados/</code> e do
+<code>ia_log.md</code>, presentes no repositório.</p>
+
+<h2>7. Limitações</h2>
+<ul>
+<li><b>Amostra pequena:</b> 18 registros e 45 mensagens; cada caso pesa 5,6 pontos percentuais nas dúvidas válidas.</li>
+<li><b>Teste escrito por IA:</b> não representa clientes reais. Um teste com mensagens reais vem antes de qualquer uso
+em produção.</li>
+<li><b>Esclarecimento em duas rodadas não medido de ponta a ponta:</b> as 5 mensagens que pediram esclarecimento não
+tinham resposta de cliente no teste, e as ambíguas escalaram antes de chegar lá.</li>
+<li><b>Sistema conservador:</b> metade das dúvidas válidas não foi respondida direto; 5 foram para esclarecimento por
+margem entre 0,002 e 0,043. Baixar o corte exige recalibrar com mais dados, não ajustar sobre este teste.</li>
+<li><b>Verificação fraca contra registro errado:</b> próximo passo é uma checagem por LLM, medida antes de adotar.</li>
+</ul>
+</section>
+
+<!-- ============ ANEXO ============ -->
+<section class="anexo">
+<h2>Anexo: fluxograma do pipeline</h2>
+<p class="small">Só responde quem passa por todas as checagens; uma margem pequena abre uma única pergunta de
+esclarecimento; o resto escala para uma pessoa.</p>
+<svg width="640" height="880" viewBox="0 0 640 880" xmlns="http://www.w3.org/2000/svg"
+     font-family="Segoe UI, Arial, sans-serif" font-size="12.5" fill="#1c1f24">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7a818c"/>
+    </marker>
+    <style>
+      .bx { fill:#fff; stroke:#9aa1ab; stroke-width:1.2; }
+      .dm { fill:#f3f5f8; stroke:#9aa1ab; stroke-width:1.2; }
+      .es { fill:#fdf1f0; stroke:#c9827a; stroke-width:1.2; }
+      .cl { fill:#fff8e6; stroke:#c9a441; stroke-width:1.2; }
+      .ok { fill:#e6efff; stroke:#1f5fbf; stroke-width:1.8; }
+      .ln { stroke:#7a818c; stroke-width:1.2; fill:none; marker-end:url(#a); }
+      .lb { font-size:11px; fill:#5b6270; }
+      .c  { text-anchor:middle; }
+    </style>
+  </defs>
+
+  <!-- coluna principal: centro x=200 -->
+  <rect class="bx" x="80" y="8" width="240" height="32" rx="6"/>
+  <text class="c" x="200" y="29">Mensagem do cliente</text>
+  <line class="ln" x1="200" y1="40" x2="200" y2="58"/>
+
+  <rect class="bx" x="80" y="58" width="240" height="32" rx="6"/>
+  <text class="c" x="200" y="79">Normalizar e mascarar dados pessoais</text>
+  <line class="ln" x1="200" y1="90" x2="200" y2="108"/>
+
+  <polygon class="dm" points="200,108 330,134 200,160 70,134"/>
+  <text class="c" x="200" y="131">Injeção, urgência ou</text>
+  <text class="c" x="200" y="146">pedido de humano?</text>
+  <line class="ln" x1="330" y1="134" x2="408" y2="134"/><text class="lb" x="350" y="128">sim</text>
+  <rect class="es" x="410" y="118" width="210" height="32" rx="6"/>
+  <text class="c" x="515" y="139">ESCALAR (regra rápida)</text>
+  <line class="ln" x1="200" y1="160" x2="200" y2="180"/><text class="lb" x="207" y="174">não</text>
+
+  <rect class="bx" x="80" y="180" width="240" height="32" rx="6"/>
+  <text class="c" x="200" y="201">Classificar intenção (LLM, JSON)</text>
+  <line class="ln" x1="200" y1="212" x2="200" y2="230"/>
+
+  <polygon class="dm" points="200,230 330,256 200,282 70,256"/>
+  <text class="c" x="200" y="253">Conta, humano ou</text>
+  <text class="c" x="200" y="268">fora de escopo?</text>
+  <line class="ln" x1="330" y1="256" x2="408" y2="256"/><text class="lb" x="350" y="250">sim</text>
+  <rect class="es" x="410" y="240" width="210" height="32" rx="6"/>
+  <text class="c" x="515" y="261">ESCALAR (intenção especial)</text>
+  <line class="ln" x1="200" y1="282" x2="200" y2="302"/><text class="lb" x="207" y="296">não</text>
+
+  <rect class="bx" x="80" y="302" width="240" height="32" rx="6"/>
+  <text class="c" x="200" y="323">Embedding, busca e agrupar por registro</text>
+  <line class="ln" x1="200" y1="334" x2="200" y2="352"/>
+
+  <polygon class="dm" points="200,352 330,378 200,404 70,378"/>
+  <text class="c" x="200" y="375">Score do 1º</text>
+  <text class="c" x="200" y="390">abaixo de 0,55?</text>
+  <line class="ln" x1="330" y1="378" x2="408" y2="378"/><text class="lb" x="350" y="372">sim</text>
+  <rect class="es" x="410" y="362" width="210" height="32" rx="6"/>
+  <text class="c" x="515" y="383">ESCALAR (score baixo)</text>
+  <line class="ln" x1="200" y1="404" x2="200" y2="424"/><text class="lb" x="207" y="418">não</text>
+
+  <polygon class="dm" points="200,424 330,450 200,476 70,450"/>
+  <text class="c" x="200" y="447">Intenção incoerente</text>
+  <text class="c" x="200" y="462">com o 1º registro?</text>
+  <line class="ln" x1="330" y1="450" x2="408" y2="450"/><text class="lb" x="350" y="444">sim</text>
+  <rect class="es" x="410" y="434" width="210" height="32" rx="6"/>
+  <text class="c" x="515" y="455">ESCALAR (incoerente)</text>
+  <line class="ln" x1="200" y1="476" x2="200" y2="496"/><text class="lb" x="207" y="490">não</text>
+
+  <polygon class="dm" points="200,496 330,522 200,548 70,522"/>
+  <text class="c" x="200" y="519">Margem 1º − 2º</text>
+  <text class="c" x="200" y="534">abaixo de 0,05?</text>
+  <line class="ln" x1="330" y1="522" x2="408" y2="522"/><text class="lb" x="350" y="516">sim</text>
+  <polygon class="dm" points="515,500 620,522 515,544 410,522"/>
+  <text class="c" x="515" y="519" font-size="11.5">Já houve</text>
+  <text class="c" x="515" y="533" font-size="11.5">esclarecimento?</text>
+  <line class="ln" x1="515" y1="544" x2="515" y2="566"/><text class="lb" x="522" y="560">não</text>
+  <rect class="cl" x="410" y="566" width="210" height="44" rx="6"/>
+  <text class="c" x="515" y="584">ESCLARECER (1 rodada)</text>
+  <text class="c lb" x="515" y="600">"é a pergunta A ou a B?" (sem LLM)</text>
+  <path class="ln" d="M620,522 L632,522 L632,640 L622,640"/>
+  <text class="lb" x="597" y="514">sim</text>
+  <rect class="es" x="410" y="624" width="210" height="32" rx="6"/>
+  <text class="c" x="515" y="645">ESCALAR (continua ambíguo)</text>
+  <line class="ln" x1="200" y1="548" x2="200" y2="680"/><text class="lb" x="207" y="562">não</text>
+
+  <rect class="bx" x="80" y="680" width="240" height="32" rx="6"/>
+  <text class="c" x="200" y="701">Gerar só com o registro escolhido</text>
+  <line class="ln" x1="200" y1="712" x2="200" y2="730"/>
+
+  <polygon class="dm" points="200,730 330,756 200,782 70,756"/>
+  <text class="c" x="200" y="753">Verificação por</text>
+  <text class="c" x="200" y="768">regras ok?</text>
+  <line class="ln" x1="330" y1="756" x2="408" y2="756"/><text class="lb" x="350" y="750">não</text>
+  <rect class="es" x="410" y="740" width="210" height="32" rx="6"/>
+  <text class="c" x="515" y="761">ESCALAR (verificação)</text>
+  <line class="ln" x1="200" y1="782" x2="200" y2="802"/><text class="lb" x="207" y="796">sim</text>
+
+  <rect class="ok" x="80" y="802" width="240" height="34" rx="6"/>
+  <text class="c" x="200" y="824" font-weight="700">RESPONDER</text>
+
+  <text x="0" y="858" class="lb">A resposta do cliente ao esclarecimento volta ao início junto com a mensagem original.</text>
+  <text x="0" y="874" class="lb">Falha do Ollama ou do Chroma em qualquer etapa: ESCALAR e avisar o cliente.</text>
+</svg>
+</section>
+
+</body>
+</html>
